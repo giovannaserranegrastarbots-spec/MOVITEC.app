@@ -1,5 +1,5 @@
 """
-Telemetria Educacional - Versão DEMO (dados simulados)
+MOVITEC - Versão DEMO (dados simulados)
 ---------------------------------------------------------
 Essa versão NÃO precisa de Arduino, sensor, porta serial nem Firebase.
 Ela gera dados falsos de aceleração/frenagem, sozinha, só para você
@@ -148,7 +148,7 @@ margem_histerese = st.sidebar.slider(
 # ----------------------------------------------------------------------
 # Cabeçalho
 # ----------------------------------------------------------------------
-st.title("🤖 Telemetria Educacional - Comportamento do Robô")
+st.title("🤖 MOVTEC - Comportamento do Robô")
 st.caption("Monitoramento de acelerações e frenagens bruscas — versão demo com dados simulados")
 
 st.divider()
