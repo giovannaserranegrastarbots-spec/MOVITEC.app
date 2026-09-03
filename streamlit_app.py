@@ -23,7 +23,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Telemetria Educacional - Robô (Demo)", layout="wide")
+st.set_page_config(page_title="MOVTECH - Robô (Demo)", layout="wide")
 
 
 # ----------------------------------------------------------------------
@@ -411,7 +411,7 @@ chance_evento = chance_evento_pct / 100
 # ----------------------------------------------------------------------
 # Cabeçalho
 # ----------------------------------------------------------------------
-st.title("🤖 Telemetria Educacional - Comportamento do Robô")
+st.title("🤖 MOVTECH - Comportamento do Robô")
 st.caption("Monitoramento de acelerações e frenagens bruscas — versão demo com dados simulados")
 
 st.divider()
