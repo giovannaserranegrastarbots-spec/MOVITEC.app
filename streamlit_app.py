@@ -58,13 +58,16 @@ inicializar_estado()
 # ----------------------------------------------------------------------
 # Simulação de dados (substitui o Arduino por enquanto)
 # ----------------------------------------------------------------------
-def gerar_leitura_simulada():
+def gerar_leitura_simulada(chance_evento):
     """Gera um valor de aceleração longitudinal parecido com um robô real:
     a maior parte do tempo é ruído pequeno, com "rajadas" ocasionais de
-    aceleração ou frenagem brusca, como se fosse um trajeto de verdade."""
+    aceleração ou frenagem brusca, como se fosse um trajeto de verdade.
 
-    # 8% de chance de começar uma nova rajada de evento, se não houver uma ativa
-    if st.session_state.sim_tipo_ativo is None and random.random() < 0.08:
+    chance_evento: probabilidade (0 a 1) de iniciar uma nova rajada a cada
+    ciclo de leitura. Quanto maior, mais "arriscado" o motorista simulado."""
+
+    # chance de começar uma nova rajada de evento, se não houver uma ativa
+    if st.session_state.sim_tipo_ativo is None and random.random() < chance_evento:
         st.session_state.sim_tipo_ativo = random.choice(["acel", "freio"])
         st.session_state.sim_ciclos_restantes = random.randint(2, 5)
 
@@ -249,26 +252,53 @@ def resumo_dialog():
         st.metric("💰 Saldo Total de Pontos (Ano)", int(st.session_state.saldo_pontos_ano))
 
         st.divider()
-        st.caption("Prévia do que esses pontos representariam em descontos:")
+        st.caption("Troque seus pontos agora:")
 
-        preview_ipva = st.session_state.saldo_pontos_ano * VALOR_POR_PONTO_IPVA
-        st.write(f"🚗 **Desconto no IPVA:** até R$ {preview_ipva:.2f} (sujeito ao teto de {DESCONTO_MAXIMO_IPVA_PCT}% do valor do imposto)")
+        aba_ipva, aba_posto = st.tabs(["🚗 Desconto no IPVA", "⛽ Postos Parceiros"])
 
-        pontos_para_posto_barato = min(
-            (custo for custo in POSTOS_EXEMPLO.values() if custo <= st.session_state.saldo_pontos_ano),
-            default=None,
-        )
-        if pontos_para_posto_barato is not None:
-            st.write(f"⛽ **Postos parceiros:** você já tem pontos suficientes para pelo menos 1 desconto disponível")
-        else:
-            faltam = min(POSTOS_EXEMPLO.values()) - st.session_state.saldo_pontos_ano
-            st.write(f"⛽ **Postos parceiros:** faltam {int(faltam)} pontos para o desconto mais barato")
+        with aba_ipva:
+            valor_ipva_dialog = st.number_input(
+                "Valor do IPVA (R$)", min_value=0.0, value=800.0, step=50.0, key="dialog_valor_ipva"
+            )
+            desconto_bruto = st.session_state.saldo_pontos_ano * VALOR_POR_PONTO_IPVA
+            desconto_maximo = valor_ipva_dialog * (DESCONTO_MAXIMO_IPVA_PCT / 100)
+            desconto_final = min(desconto_bruto, desconto_maximo)
+            pontos_usados_ipva = round(desconto_final / VALOR_POR_PONTO_IPVA) if VALOR_POR_PONTO_IPVA else 0
 
-        st.caption("O resgate de verdade é feito na seção 'Resgatar Pontos' da tela principal.")
+            st.write(f"Desconto disponível: **R$ {desconto_final:.2f}** ({pontos_usados_ipva} pontos)")
+            if desconto_bruto > desconto_maximo:
+                st.caption(f"(limitado ao teto de {DESCONTO_MAXIMO_IPVA_PCT}% do valor do IPVA)")
 
+            if st.button("Resgatar no IPVA", key="dialog_btn_ipva"):
+                if st.session_state.saldo_pontos_ano <= 0:
+                    st.warning("Você ainda não tem pontos suficientes.")
+                else:
+                    st.session_state.saldo_pontos_ano -= pontos_usados_ipva
+                    st.success(f"Resgatado! R$ {desconto_final:.2f} de desconto.")
+                    st.rerun()
+
+        with aba_posto:
+            escolha_posto_dialog = st.selectbox(
+                "Posto parceiro (exemplos)", list(POSTOS_EXEMPLO.keys()), key="dialog_posto_select"
+            )
+            custo_posto = POSTOS_EXEMPLO[escolha_posto_dialog]
+            st.write(f"Custo: **{custo_posto} pontos**")
+
+            if st.button("Resgatar no posto", key="dialog_btn_posto"):
+                if st.session_state.saldo_pontos_ano >= custo_posto:
+                    st.session_state.saldo_pontos_ano -= custo_posto
+                    st.success(f"Cupom gerado: {escolha_posto_dialog}")
+                    st.rerun()
+                else:
+                    st.warning(
+                        f"Pontos insuficientes. Você tem {int(st.session_state.saldo_pontos_ano)}, "
+                        f"precisa de {custo_posto}."
+                    )
+
+        st.divider()
         col_esq, col_dir = st.columns([1, 3])
         with col_esq:
-            if st.button("⬅️ Voltar"):
+            if st.button("⬅️ Voltar", key="dialog_btn_voltar"):
                 st.session_state.resumo_pagina = 0
                 st.rerun()
 
@@ -300,6 +330,14 @@ limiar_minimo_pontuavel = st.sidebar.slider(
     "Nota mínima para ganhar pontos", 0.0, 10.0, 3.0, 0.5,
     help="Corridas com nota abaixo deste valor não geram pontos, mesmo que sejam longas.",
 )
+
+st.sidebar.divider()
+st.sidebar.subheader("🎮 Simulação")
+chance_evento_pct = st.sidebar.slider(
+    "Quão arriscado é o motorista simulado (%)", 0.5, 15.0, 2.0, 0.5,
+    help="Chance de começar um evento brusco a cada ciclo de leitura. Valores baixos = motorista cuidadoso (gera pontos). Valores altos = motorista arriscado (nota despenca).",
+)
+chance_evento = chance_evento_pct / 100
 
 
 # ----------------------------------------------------------------------
@@ -384,7 +422,7 @@ st.divider()
 @st.fragment(run_every=0.5)
 def painel_tempo_real():
     if st.session_state.coletando:
-        accel_x, forca_g = gerar_leitura_simulada()
+        accel_x, forca_g = gerar_leitura_simulada(chance_evento)
         registrar_evento(accel_x, limiar_aceleracao, limiar_frenagem, margem_histerese)
 
         nova_linha = pd.DataFrame(
