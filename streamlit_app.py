@@ -1,3 +1,20 @@
+"""
+Telemetria Educacional - Versão DEMO (dados simulados)
+---------------------------------------------------------
+Essa versão NÃO precisa de Arduino, sensor, porta serial nem Firebase.
+Ela gera dados falsos de aceleração/frenagem, sozinha, só para você
+construir e testar a interface, os gráficos, as métricas e o feedback
+por voz.
+
+Quando o robô estiver disponível de novo, essa mesma lógica de
+interface pode ser reaproveitada trocando só a função que gera os
+dados (gerar_leitura_simulada) pela leitura real da serial.
+
+Como executar:
+    pip install streamlit pandas
+    streamlit run telemetria_demo_app.py
+"""
+
 import random
 import time
 from datetime import datetime
@@ -6,7 +23,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title=" MOVTEC - Robô (Demo)", layout="wide")
+st.set_page_config(page_title="Telemetria Educacional - Robô (Demo)", layout="wide")
 
 
 # ----------------------------------------------------------------------
@@ -148,6 +165,54 @@ def calcular_pontuacao(duracao_min, total_eventos, peso_penalidade, pontos_por_m
     return round(nota_qualidade, 1), round(pontos_corrida)
 
 
+def calcular_indice_qualidade_anual():
+    """
+    Índice de qualidade do ano inteiro: média das notas de todas as
+    corridas já finalizadas, ponderada pela duração de cada uma.
+
+        indice = Σ(nota_i × duração_i) / Σ(duração_i)
+
+    Diferente dos "pontos" (que são uma moeda que se acumula e se gasta),
+    esse índice é recalculado do zero a cada corrida — ele não mede volume,
+    mede CONSISTÊNCIA da qualidade ao longo do tempo. Duas corridas com a
+    mesma nota, uma de 2h e outra de 8h, resultam no mesmo índice; só um
+    histórico de notas mais baixas puxa o índice pra baixo de verdade.
+
+    Usamos esse índice para modular o teto de desconto do IPVA (ver mais
+    abaixo), então quem tem qualidade consistente libera mais do teto
+    regulatório do que quem rodou irregular.
+    """
+    historico = st.session_state.historico_percursos
+    if not historico:
+        return None
+
+    soma_ponderada = sum(item["Nota"] * item["Duração (min)"] for item in historico)
+    soma_duracao = sum(item["Duração (min)"] for item in historico)
+
+    if soma_duracao <= 0:
+        return None
+
+    return round(soma_ponderada / soma_duracao, 1)
+
+
+def calcular_teto_ipva_modulado():
+    """
+    O teto regulatório de desconto (DESCONTO_MAXIMO_IPVA_PCT) é fixo por lei,
+    mas quanto DESSE teto o motorista consegue de fato usar é modulado pelo
+    índice de qualidade anual: índice 10/10 libera 100% do teto, índice 5/10
+    libera só 50%, etc. Isso amarra o benefício do IPVA à consistência da
+    boa condução ao longo do ano, não só ao volume de pontos acumulados.
+
+    Retorna (teto_efetivo_pct, indice_anual). indice_anual vem None se ainda
+    não houver nenhuma corrida no histórico.
+    """
+    indice_anual = calcular_indice_qualidade_anual()
+    if indice_anual is None:
+        return 0.0, None
+    teto_efetivo_pct = DESCONTO_MAXIMO_IPVA_PCT * (indice_anual / 10)
+    return teto_efetivo_pct, indice_anual
+
+
 def falar_no_navegador(texto):
     texto_escapado = texto.replace('"', '\\"')
     components.html(
@@ -256,14 +321,17 @@ def resumo_dialog():
             valor_ipva_dialog = st.number_input(
                 "Valor do IPVA (R$)", min_value=0.0, value=800.0, step=50.0, key="dialog_valor_ipva"
             )
+            teto_pct_dialog, indice_dialog = calcular_teto_ipva_modulado()
             desconto_bruto = st.session_state.saldo_pontos_ano * VALOR_POR_PONTO_IPVA
-            desconto_maximo = valor_ipva_dialog * (DESCONTO_MAXIMO_IPVA_PCT / 100)
+            desconto_maximo = valor_ipva_dialog * (teto_pct_dialog / 100)
             desconto_final = min(desconto_bruto, desconto_maximo)
             pontos_usados_ipva = round(desconto_final / VALOR_POR_PONTO_IPVA) if VALOR_POR_PONTO_IPVA else 0
 
+            if indice_dialog is not None:
+                st.caption(f"Índice de qualidade anual: {indice_dialog:.1f}/10 → libera {teto_pct_dialog:.1f}% do teto de {DESCONTO_MAXIMO_IPVA_PCT}%")
             st.write(f"Desconto disponível: **R$ {desconto_final:.2f}** ({pontos_usados_ipva} pontos)")
             if desconto_bruto > desconto_maximo:
-                st.caption(f"(limitado ao teto de {DESCONTO_MAXIMO_IPVA_PCT}% do valor do IPVA)")
+                st.caption(f"(limitado pelo seu teto atual de {teto_pct_dialog:.1f}% do valor do IPVA)")
 
             if st.button("Resgatar no IPVA", key="dialog_btn_ipva"):
                 if st.session_state.saldo_pontos_ano <= 0:
@@ -480,9 +548,15 @@ if not st.session_state.historico_percursos:
 else:
     df_extrato = pd.DataFrame(st.session_state.historico_percursos)
     st.dataframe(df_extrato, use_container_width=True, hide_index=True)
+
+    indice_anual = calcular_indice_qualidade_anual()
+    col_ext1, col_ext2 = st.columns(2)
+    col_ext1.metric("💰 Saldo de Pontos (Ano)", int(st.session_state.saldo_pontos_ano))
+    col_ext2.metric("📈 Índice de Qualidade Anual", f"{indice_anual:.1f}/10" if indice_anual is not None else "—")
     st.caption(
-        f"Saldo acumulado no ano: **{int(st.session_state.saldo_pontos_ano)} pontos** "
-        f"em {len(st.session_state.historico_percursos)} corrida(s)."
+        f"{len(st.session_state.historico_percursos)} corrida(s) registrada(s). "
+        "O índice de qualidade é a média das notas ponderada pela duração de cada corrida — "
+        "ele é quem define quanto do teto de desconto do IPVA você consegue usar (veja abaixo)."
     )
     st.info(
         "⚠️ Este extrato existe apenas durante esta sessão do navegador (dados simulados/demo). "
@@ -498,14 +572,17 @@ col_ipva, col_posto = st.columns(2)
 with col_ipva:
     st.markdown("**Desconto no IPVA**")
     valor_ipva = st.number_input("Valor do IPVA do veículo (R$)", min_value=0.0, value=800.0, step=50.0)
+    teto_pct, indice_para_ipva = calcular_teto_ipva_modulado()
     desconto_bruto = st.session_state.saldo_pontos_ano * VALOR_POR_PONTO_IPVA
-    desconto_maximo = valor_ipva * (DESCONTO_MAXIMO_IPVA_PCT / 100)
+    desconto_maximo = valor_ipva * (teto_pct / 100)
     desconto_final = min(desconto_bruto, desconto_maximo)
     pontos_usados_ipva = round(desconto_final / VALOR_POR_PONTO_IPVA) if VALOR_POR_PONTO_IPVA else 0
 
+    if indice_para_ipva is not None:
+        st.caption(f"Índice de qualidade anual: {indice_para_ipva:.1f}/10 → libera {teto_pct:.1f}% do teto de {DESCONTO_MAXIMO_IPVA_PCT}%")
     st.write(f"Com seus {int(st.session_state.saldo_pontos_ano)} pontos, seu desconto seria de **R$ {desconto_final:.2f}**")
     if desconto_bruto > desconto_maximo:
-        st.caption(f"(limitado ao teto de {DESCONTO_MAXIMO_IPVA_PCT}% do valor do IPVA)")
+        st.caption(f"(limitado pelo seu teto atual de {teto_pct:.1f}% do valor do IPVA)")
 
     if st.button("Resgatar desconto de IPVA"):
         if st.session_state.saldo_pontos_ano <= 0:
