@@ -9,7 +9,7 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="MOVTECH - Robô (Demo)", layout="wide")
 
 
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------
 # Estado da sessão
 # ----------------------------------------------------------------------
 def inicializar_estado():
