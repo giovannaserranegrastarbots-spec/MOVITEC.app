@@ -1,20 +1,3 @@
-"""
-Telemetria Educacional - Versão DEMO (dados simulados)
----------------------------------------------------------
-Essa versão NÃO precisa de Arduino, sensor, porta serial nem Firebase.
-Ela gera dados falsos de aceleração/frenagem, sozinha, só para você
-construir e testar a interface, os gráficos, as métricas e o feedback
-por voz.
-
-Quando o robô estiver disponível de novo, essa mesma lógica de
-interface pode ser reaproveitada trocando só a função que gera os
-dados (gerar_leitura_simulada) pela leitura real da serial.
-
-Como executar:
-    pip install streamlit pandas
-    streamlit run telemetria_demo_app.py
-"""
-
 import random
 import time
 from datetime import datetime
@@ -411,7 +394,7 @@ chance_evento = chance_evento_pct / 100
 # ----------------------------------------------------------------------
 # Cabeçalho
 # ----------------------------------------------------------------------
-st.title("🤖 MOVTECH - Comportamento do Robô")
+st.title("🤖 MOVTEC - Comportamento do Robô")
 st.caption("Monitoramento de acelerações e frenagens bruscas — versão demo com dados simulados")
 
 st.divider()
