@@ -46,6 +46,8 @@ def inicializar_estado():
         "saldo_pontos_ano": 0,
         "historico_percursos": [],  # cada item: data, duracao_min, eventos, nota, pontos
         "resumo_pagina": 0,  # 0 = resumo escrito, 1 = pontos e descontos
+        "mostrar_checklist": False,
+        "mostrar_resumo": False,
     }
     for chave, valor in defaults.items():
         if chave not in st.session_state:
@@ -221,11 +223,18 @@ def checklist_dialog():
     if not todos_marcados:
         st.caption("Marque todos os itens para liberar o início da corrida.")
 
-    if st.button("🚦 Confirmar e Iniciar Corrida", disabled=not todos_marcados, type="primary"):
-        for item in ITENS_CHECKLIST:
-            st.session_state.pop(f"check_{item}", None)  # limpa as marcações para a próxima corrida
-        iniciar_percurso_de_verdade()
-        st.rerun()
+    col_confirmar, col_cancelar = st.columns([3, 1])
+    with col_confirmar:
+        if st.button("🚦 Confirmar e Iniciar Corrida", disabled=not todos_marcados, type="primary"):
+            for item in ITENS_CHECKLIST:
+                st.session_state.pop(f"check_{item}", None)  # limpa as marcações para a próxima corrida
+            st.session_state.mostrar_checklist = False
+            iniciar_percurso_de_verdade()
+            st.rerun()
+    with col_cancelar:
+        if st.button("Cancelar"):
+            st.session_state.mostrar_checklist = False
+            st.rerun()
 
 
 @st.dialog("📋 Resumo da Corrida")
@@ -237,7 +246,11 @@ def resumo_dialog():
             falar_no_navegador(st.session_state.ultimo_resumo)
 
         st.write("")
-        col_esq, col_dir = st.columns([3, 1])
+        col_fechar, col_meio, col_dir = st.columns([1, 2, 1])
+        with col_fechar:
+            if st.button("✖ Fechar"):
+                st.session_state.mostrar_resumo = False
+                st.rerun()
         with col_dir:
             if st.button("Pontos ➡️"):
                 st.session_state.resumo_pagina = 1
@@ -301,6 +314,10 @@ def resumo_dialog():
             if st.button("⬅️ Voltar", key="dialog_btn_voltar"):
                 st.session_state.resumo_pagina = 0
                 st.rerun()
+        with col_dir:
+            if st.button("✖ Fechar", key="dialog_btn_fechar_p2"):
+                st.session_state.mostrar_resumo = False
+                st.rerun()
 
 
 # ----------------------------------------------------------------------
@@ -356,7 +373,7 @@ col_a, col_b, col_c = st.columns([1, 1, 2])
 
 with col_a:
     if st.button("▶️ Iniciar Percurso", disabled=st.session_state.coletando, use_container_width=True):
-        checklist_dialog()
+        st.session_state.mostrar_checklist = True
 
 with col_b:
     if st.button(
@@ -391,13 +408,22 @@ with col_b:
 
         st.session_state.ultimo_resumo = gerar_resumo_texto()
         st.session_state.resumo_pagina = 0
-        resumo_dialog()
+        st.session_state.mostrar_resumo = True
 
 with col_c:
     if st.session_state.coletando:
         st.info("🟢 Simulando percurso em tempo real...")
     else:
         st.info("🟡 Pressione 'Iniciar Percurso' para começar a simulação.")
+
+# Reabre o pop-up certo em TODA execução do script, enquanto a flag
+# estiver ligada — é isso que faz a navegação por seta dentro do
+# pop-up funcionar sem ele fechar sozinho.
+if st.session_state.mostrar_checklist:
+    checklist_dialog()
+
+if st.session_state.mostrar_resumo:
+    resumo_dialog()
 
 st.divider()
 
