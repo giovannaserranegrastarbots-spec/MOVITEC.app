@@ -45,6 +45,7 @@ def inicializar_estado():
         "pontos_ultima_corrida": 0,
         "saldo_pontos_ano": 0,
         "historico_percursos": [],  # cada item: data, duracao_min, eventos, nota, pontos
+        "resumo_pagina": 0,  # 0 = resumo escrito, 1 = pontos e descontos
     }
     for chave, valor in defaults.items():
         if chave not in st.session_state:
@@ -174,6 +175,104 @@ def falar_no_navegador(texto):
     )
 
 
+ITENS_CHECKLIST = [
+    "Cinto de segurança preso",
+    "Faróis funcionando",
+    "Nível de combustível/bateria verificado",
+    "Calibragem dos pneus conferida",
+    "Freios testados",
+    "Área do percurso livre de obstáculos",
+]
+
+# Constantes do sistema de recompensa (usadas tanto no pop-up de resumo
+# quanto na seção de resgate mais abaixo na tela)
+VALOR_POR_PONTO_IPVA = 0.05  # R$ que cada ponto vale em desconto de IPVA
+DESCONTO_MAXIMO_IPVA_PCT = 20  # limite regulatório hipotético, ajuste conforme a regra real do estado
+POSTOS_EXEMPLO = {
+    "Posto Central — R$ 5 de desconto": 100,
+    "Auto Posto Bairro Sul — R$ 10 de desconto": 190,
+    "Rede Estrada Verde — R$ 20 de desconto": 350,
+}
+
+
+def iniciar_percurso_de_verdade():
+    """Zera os contadores e efetivamente começa a coleta de dados."""
+    st.session_state.coletando = True
+    st.session_state.percurso_finalizado = False
+    st.session_state.historico = pd.DataFrame(columns=["tempo", "accel_x", "forca_g"])
+    st.session_state.total_aceleracoes = 0
+    st.session_state.total_frenagens = 0
+    st.session_state.estado_evento_anterior = "neutro"
+    st.session_state.sim_tipo_ativo = None
+    st.session_state.hora_inicio_percurso = datetime.now()
+
+
+@st.dialog("✅ Checklist Pré-Corrida")
+def checklist_dialog():
+    st.write("Confira todos os itens antes de iniciar a corrida:")
+    marcados = []
+    for item in ITENS_CHECKLIST:
+        marcados.append(st.checkbox(item, key=f"check_{item}"))
+
+    todos_marcados = all(marcados)
+    if not todos_marcados:
+        st.caption("Marque todos os itens para liberar o início da corrida.")
+
+    if st.button("🚦 Confirmar e Iniciar Corrida", disabled=not todos_marcados, type="primary"):
+        for item in ITENS_CHECKLIST:
+            st.session_state.pop(f"check_{item}", None)  # limpa as marcações para a próxima corrida
+        iniciar_percurso_de_verdade()
+        st.rerun()
+
+
+@st.dialog("📋 Resumo da Corrida")
+def resumo_dialog():
+    if st.session_state.resumo_pagina == 0:
+        st.write(st.session_state.ultimo_resumo)
+
+        if st.button("🔊 Ouvir Feedback"):
+            falar_no_navegador(st.session_state.ultimo_resumo)
+
+        st.write("")
+        col_esq, col_dir = st.columns([3, 1])
+        with col_dir:
+            if st.button("Pontos ➡️"):
+                st.session_state.resumo_pagina = 1
+                st.rerun()
+
+    else:
+        nota = st.session_state.nota_ultima_corrida
+        pontos = st.session_state.pontos_ultima_corrida
+
+        st.metric("⭐ Nota da Corrida", f"{nota:.1f}/10" if nota is not None else "—")
+        st.metric("🏆 Pontos Ganhos Nesta Corrida", int(pontos))
+        st.metric("💰 Saldo Total de Pontos (Ano)", int(st.session_state.saldo_pontos_ano))
+
+        st.divider()
+        st.caption("Prévia do que esses pontos representariam em descontos:")
+
+        preview_ipva = st.session_state.saldo_pontos_ano * VALOR_POR_PONTO_IPVA
+        st.write(f"🚗 **Desconto no IPVA:** até R$ {preview_ipva:.2f} (sujeito ao teto de {DESCONTO_MAXIMO_IPVA_PCT}% do valor do imposto)")
+
+        pontos_para_posto_barato = min(
+            (custo for custo in POSTOS_EXEMPLO.values() if custo <= st.session_state.saldo_pontos_ano),
+            default=None,
+        )
+        if pontos_para_posto_barato is not None:
+            st.write(f"⛽ **Postos parceiros:** você já tem pontos suficientes para pelo menos 1 desconto disponível")
+        else:
+            faltam = min(POSTOS_EXEMPLO.values()) - st.session_state.saldo_pontos_ano
+            st.write(f"⛽ **Postos parceiros:** faltam {int(faltam)} pontos para o desconto mais barato")
+
+        st.caption("O resgate de verdade é feito na seção 'Resgatar Pontos' da tela principal.")
+
+        col_esq, col_dir = st.columns([1, 3])
+        with col_esq:
+            if st.button("⬅️ Voltar"):
+                st.session_state.resumo_pagina = 0
+                st.rerun()
+
+
 # ----------------------------------------------------------------------
 # Barra lateral
 # ----------------------------------------------------------------------
@@ -219,15 +318,7 @@ col_a, col_b, col_c = st.columns([1, 1, 2])
 
 with col_a:
     if st.button("▶️ Iniciar Percurso", disabled=st.session_state.coletando, use_container_width=True):
-        st.session_state.coletando = True
-        st.session_state.percurso_finalizado = False
-        st.session_state.historico = pd.DataFrame(columns=["tempo", "accel_x", "forca_g"])
-        st.session_state.total_aceleracoes = 0
-        st.session_state.total_frenagens = 0
-        st.session_state.estado_evento_anterior = "neutro"
-        st.session_state.sim_tipo_ativo = None
-        st.session_state.hora_inicio_percurso = datetime.now()
-        st.rerun()
+        checklist_dialog()
 
 with col_b:
     if st.button(
@@ -261,7 +352,8 @@ with col_b:
         )
 
         st.session_state.ultimo_resumo = gerar_resumo_texto()
-        st.rerun()
+        st.session_state.resumo_pagina = 0
+        resumo_dialog()
 
 with col_c:
     if st.session_state.coletando:
@@ -331,18 +423,6 @@ painel_tempo_real()
 
 
 # ----------------------------------------------------------------------
-# Resumo final e feedback por voz
-# ----------------------------------------------------------------------
-if st.session_state.percurso_finalizado:
-    st.divider()
-    st.subheader("📋 Resumo do Percurso")
-    st.write(st.session_state.ultimo_resumo)
-
-    if st.button("🔊 Ouvir Feedback"):
-        falar_no_navegador(st.session_state.ultimo_resumo)
-
-
-# ----------------------------------------------------------------------
 # Extrato anual de pontos
 # ----------------------------------------------------------------------
 st.divider()
@@ -365,9 +445,6 @@ else:
 
 st.divider()
 st.subheader("🎁 Resgatar Pontos")
-
-VALOR_POR_PONTO_IPVA = 0.05  # R$ que cada ponto vale em desconto de IPVA
-DESCONTO_MAXIMO_IPVA_PCT = 20  # limite regulatório hipotético, ajuste conforme a regra real do estado
 
 col_ipva, col_posto = st.columns(2)
 
@@ -393,13 +470,8 @@ with col_ipva:
 
 with col_posto:
     st.markdown("**Desconto em postos parceiros**")
-    postos_exemplo = {
-        "Posto Central — R$ 5 de desconto": 100,
-        "Auto Posto Bairro Sul — R$ 10 de desconto": 190,
-        "Rede Estrada Verde — R$ 20 de desconto": 350,
-    }
-    escolha_posto = st.selectbox("Posto parceiro (exemplos)", list(postos_exemplo.keys()))
-    custo_pontos = postos_exemplo[escolha_posto]
+    escolha_posto = st.selectbox("Posto parceiro (exemplos)", list(POSTOS_EXEMPLO.keys()))
+    custo_pontos = POSTOS_EXEMPLO[escolha_posto]
     st.write(f"Custo: **{custo_pontos} pontos**")
 
     if st.button("Resgatar no posto"):
