@@ -45,8 +45,8 @@ FIREBASE_URL = "https://telemetria-app-281d2-default-rtdb.firebaseio.com/"
 # se você tiver outros dispositivos Bluetooth pareados. Recomendado: pareie o
 # HC-05 primeiro, veja qual porta o sistema criou para ele, e defina aqui
 # manualmente. Exemplos: "COM7" (Windows) ou "/dev/tty.HC-05-DevB" (Mac/Linux).
-PORTA_SERIAL = None  # None = detectar automaticamente (só recomendado se for o único dispositivo pareado)
-BAUD_RATE = 9600  # baud rate padrão de fábrica do HC-05
+PORTA_SERIAL = COM4
+BAUD_RATE = 115200  # baud rate para USB
 
 LIMIAR_ACELERACAO = 2.5
 LIMIAR_FRENAGEM = 2.5
