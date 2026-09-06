@@ -1,15 +1,38 @@
-import random
+"""
+Telemetria Educacional - Versão NUVEM (dados reais via Bluetooth + Firebase)
+-------------------------------------------------------------------------------
+Este app roda no Streamlit Community Cloud. Ele NÃO se conecta à porta
+serial do robô diretamente (por isso não usa pyserial) — quem faz isso é
+o "ponte_local.py", rodando no notebook próximo ao robô, pareado com o
+HC-05 por Bluetooth.
+
+Fluxo dos dados:
+    Este app  --(comando "iniciar"/"finalizar")-->  Firebase  --> ponte_local.py
+    ponte_local.py  --(telemetria real)-->  Firebase  -->  Este app
+
+Ou seja: os botões "Iniciar Percurso" e "Finalizar Percurso" aqui não
+começam a coleta sozinhos — eles escrevem um comando no Firebase, e é a
+ponte local (que está de fato conectada ao robô) quem obedece.
+
+Como executar (nuvem):
+    Faça o deploy deste arquivo no Streamlit Community Cloud, usando o
+    requirements.txt (streamlit, pandas, requests — sem pyserial).
+"""
+
+import json
+import re
 import time
 from datetime import datetime
 
 import pandas as pd
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="MOVTEC - Robô (Demo)", layout="wide")
+st.set_page_config(page_title="Telemetria Educacional - Robô", layout="wide")
 
 
-# ---------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # Estado da sessão
 # ----------------------------------------------------------------------
 def inicializar_estado():
@@ -18,12 +41,8 @@ def inicializar_estado():
         "historico": pd.DataFrame(columns=["tempo", "accel_x", "forca_g"]),
         "total_aceleracoes": 0,
         "total_frenagens": 0,
-        "estado_evento_anterior": "neutro",
-        "sim_tipo_ativo": None,   # None | "acel" | "freio"
-        "sim_ciclos_restantes": 0,
         "percurso_finalizado": False,
         "ultimo_resumo": "",
-        "hora_inicio_percurso": None,
         "nota_ultima_corrida": None,
         "pontos_ultima_corrida": 0,
         "saldo_pontos_ano": 0,
@@ -31,6 +50,8 @@ def inicializar_estado():
         "resumo_pagina": 0,  # 0 = resumo escrito, 1 = pontos e descontos
         "mostrar_checklist": False,
         "mostrar_resumo": False,
+        "nome_motorista": "",
+        "ultimo_finalizado_processado": None,  # marca da última finalização já tratada
     }
     for chave, valor in defaults.items():
         if chave not in st.session_state:
@@ -41,50 +62,44 @@ inicializar_estado()
 
 
 # ----------------------------------------------------------------------
-# Simulação de dados (substitui o Arduino por enquanto)
+# Comunicação com a ponte local (via Firebase)
 # ----------------------------------------------------------------------
-def gerar_leitura_simulada(chance_evento):
-    """Gera um valor de aceleração longitudinal parecido com um robô real:
-    a maior parte do tempo é ruído pequeno, com "rajadas" ocasionais de
-    aceleração ou frenagem brusca, como se fosse um trajeto de verdade.
-
-    chance_evento: probabilidade (0 a 1) de iniciar uma nova rajada a cada
-    ciclo de leitura. Quanto maior, mais "arriscado" o motorista simulado."""
-
-    # chance de começar uma nova rajada de evento, se não houver uma ativa
-    if st.session_state.sim_tipo_ativo is None and random.random() < chance_evento:
-        st.session_state.sim_tipo_ativo = random.choice(["acel", "freio"])
-        st.session_state.sim_ciclos_restantes = random.randint(2, 5)
-
-    if st.session_state.sim_tipo_ativo is None:
-        accel_x = random.uniform(-0.5, 0.5)
-    else:
-        pico = random.uniform(3.0, 6.0)
-        accel_x = pico if st.session_state.sim_tipo_ativo == "acel" else -pico
-        st.session_state.sim_ciclos_restantes -= 1
-        if st.session_state.sim_ciclos_restantes <= 0:
-            st.session_state.sim_tipo_ativo = None
-
-    forca_g = 1.0 + abs(accel_x) / 9.80665 + random.uniform(-0.03, 0.03)
-    return round(accel_x, 2), round(forca_g, 2)
+def buscar_estado():
+    """Busca o retrato mais recente da telemetria, enviado pela ponte local."""
+    if not firebase_configurado():
+        return {}
+    try:
+        resposta = requests.get(f"{FIREBASE_URL}/estado.json", timeout=5)
+        resposta.raise_for_status()
+        return resposta.json() or {}
+    except requests.exceptions.RequestException:
+        st.warning("⚠️ Não consegui falar com o Firebase agora. Verifique sua conexão.")
+        return {}
+    except Exception:
+        return {}
 
 
-# ----------------------------------------------------------------------
-# Detecção de eventos (mesma lógica que será usada com dados reais)
-# ----------------------------------------------------------------------
-def registrar_evento(accel_x, limiar_aceleracao, limiar_frenagem, margem_histerese):
-    estado_anterior = st.session_state.estado_evento_anterior
-
-    if accel_x >= limiar_aceleracao:
-        if estado_anterior != "acelerando":
-            st.session_state.total_aceleracoes += 1
-        st.session_state.estado_evento_anterior = "acelerando"
-    elif accel_x <= -limiar_frenagem:
-        if estado_anterior != "freando":
-            st.session_state.total_frenagens += 1
-        st.session_state.estado_evento_anterior = "freando"
-    elif abs(accel_x) <= margem_histerese:
-        st.session_state.estado_evento_anterior = "neutro"
+def enviar_comando(acao):
+    """Escreve um comando (iniciar/finalizar) para a ponte local obedecer.
+    Cada comando tem um 'id' único (baseado no horário) para a ponte saber
+    que é um comando NOVO, e não o mesmo de antes."""
+    if not firebase_configurado():
+        st.error(
+            "FIREBASE_URL não configurado neste app — sem isso, não há como avisar a ponte local. "
+            "Edite a constante no topo do arquivo."
+        )
+        return
+    payload = {"acao": acao, "id": f"{acao}_{int(time.time() * 1000)}"}
+    try:
+        resposta = requests.put(f"{FIREBASE_URL}/comando.json", data=json.dumps(payload), timeout=5)
+        resposta.raise_for_status()
+    except requests.exceptions.RequestException:
+        st.warning(
+            "⚠️ Não consegui enviar o comando para o robô agora (sem conexão com o Firebase). "
+            "Confira se o notebook da ponte (ponte_local.py) está ligado e conectado à internet."
+        )
+    except Exception:
+        st.warning("⚠️ Algo deu errado ao enviar o comando.")
 
 
 def gerar_resumo_texto():
@@ -230,36 +245,146 @@ POSTOS_EXEMPLO = {
     "Rede Estrada Verde — R$ 20 de desconto": 350,
 }
 
+# ---------- Configuração do Firebase (obrigatório nesta versão) ----------
+# Aqui o Firebase não é mais opcional: ele carrega a telemetria real vinda
+# da ponte local, os comandos de Iniciar/Finalizar, E o histórico de cada
+# motorista. Cole a mesma URL usada no ponte_local.py.
+FIREBASE_URL = "https://SEU-PROJETO-default-rtdb.firebaseio.com"
+
+
+def firebase_configurado():
+    return "SEU-PROJETO" not in FIREBASE_URL
+
+
+def chave_motorista(nome):
+    """Transforma o nome digitado numa chave válida para o Firebase
+    (sem espaços, pontos, barras ou colchetes)."""
+    chave = nome.strip().lower()
+    chave = re.sub(r"[^a-z0-9_-]+", "_", chave)
+    return chave or "motorista"
+
+
+def carregar_dados_motorista(nome):
+    """Busca o histórico salvo desse motorista no Firebase. Devolve None
+    (silenciosamente, se o Firebase não estiver configurado; com um aviso
+    amigável, se a busca falhar) para que o app sempre continue funcionando
+    com os dados da sessão atual, mesmo sem conexão."""
+    if not firebase_configurado():
+        return None
+    try:
+        chave = chave_motorista(nome)
+        resposta = requests.get(f"{FIREBASE_URL}/motoristas/{chave}.json", timeout=5)
+        resposta.raise_for_status()
+        return resposta.json()
+    except requests.exceptions.RequestException:
+        st.warning(
+            "⚠️ Não consegui buscar seu histórico salvo agora (sem conexão com o banco). "
+            "Vamos continuar só com os dados desta sessão."
+        )
+        return None
+    except Exception:
+        st.warning("⚠️ Algo deu errado ao buscar seus dados salvos. Continuando só com os dados desta sessão.")
+        return None
+
+
+def salvar_dados_motorista(nome, dados):
+    """Salva o histórico do motorista no Firebase. Se não estiver configurado
+    ou a gravação falhar, avisa de forma amigável mas não trava o app —
+    os pontos da corrida continuam valendo nesta sessão de qualquer forma."""
+    if not firebase_configurado():
+        return
+    try:
+        chave = chave_motorista(nome)
+        resposta = requests.put(f"{FIREBASE_URL}/motoristas/{chave}.json", data=json.dumps(dados), timeout=5)
+        resposta.raise_for_status()
+    except requests.exceptions.RequestException:
+        st.warning(
+            "⚠️ Não consegui salvar seu histórico agora (sem conexão com o banco). "
+            "Seus pontos desta corrida continuam valendo aqui, mas talvez não apareçam da próxima vez que você entrar."
+        )
+    except Exception:
+        st.warning("⚠️ Algo deu errado ao salvar seus dados desta corrida.")
+
+
+def carregar_todos_motoristas():
+    """Busca o histórico de TODOS os motoristas já salvos, para montar o
+    comparativo. Devolve None se o Firebase não estiver configurado ou a
+    busca falhar (com aviso amigável nesse segundo caso)."""
+    if not firebase_configurado():
+        return None
+    try:
+        resposta = requests.get(f"{FIREBASE_URL}/motoristas.json", timeout=5)
+        resposta.raise_for_status()
+        return resposta.json() or {}
+    except Exception:
+        st.warning("⚠️ Não consegui carregar o comparativo entre motoristas agora. Tente novamente em instantes.")
+        return None
+
+
+def salvar_estado_atual():
+    """Atalho para salvar o histórico/saldo atuais do motorista logado."""
+    if not st.session_state.nome_motorista:
+        return
+    salvar_dados_motorista(
+        st.session_state.nome_motorista,
+        {
+            "nome": st.session_state.nome_motorista,
+            "historico_percursos": st.session_state.historico_percursos,
+            "saldo_pontos_ano": st.session_state.saldo_pontos_ano,
+        },
+    )
+
+
 
 def iniciar_percurso_de_verdade():
-    """Zera os contadores e efetivamente começa a coleta de dados."""
+    """Avisa a ponte local (via comando no Firebase) que a corrida deve
+    começar. Também reflete otimistamente na tela local — o próximo
+    ciclo do painel em tempo real confirma com o estado real da ponte."""
+    enviar_comando("iniciar")
     st.session_state.coletando = True
     st.session_state.percurso_finalizado = False
     st.session_state.historico = pd.DataFrame(columns=["tempo", "accel_x", "forca_g"])
     st.session_state.total_aceleracoes = 0
     st.session_state.total_frenagens = 0
-    st.session_state.estado_evento_anterior = "neutro"
-    st.session_state.sim_tipo_ativo = None
-    st.session_state.hora_inicio_percurso = datetime.now()
 
 
 @st.dialog("✅ Checklist Pré-Corrida")
 def checklist_dialog():
+    nome_digitado = st.text_input(
+        "Nome do motorista", value=st.session_state.nome_motorista, key="input_nome_motorista"
+    )
+
     st.write("Confira todos os itens antes de iniciar a corrida:")
     marcados = []
     for item in ITENS_CHECKLIST:
         marcados.append(st.checkbox(item, key=f"check_{item}"))
 
     todos_marcados = all(marcados)
-    if not todos_marcados:
+    nome_valido = nome_digitado.strip() != ""
+
+    if not nome_valido:
+        st.caption("Digite o nome do motorista para liberar o início da corrida.")
+    elif not todos_marcados:
         st.caption("Marque todos os itens para liberar o início da corrida.")
 
     col_confirmar, col_cancelar = st.columns([3, 1])
     with col_confirmar:
-        if st.button("🚦 Confirmar e Iniciar Corrida", disabled=not todos_marcados, type="primary"):
+        if st.button(
+            "🚦 Confirmar e Iniciar Corrida",
+            disabled=not (todos_marcados and nome_valido),
+            type="primary",
+        ):
             for item in ITENS_CHECKLIST:
                 st.session_state.pop(f"check_{item}", None)  # limpa as marcações para a próxima corrida
+            nome = nome_digitado.strip()
+            st.session_state.nome_motorista = nome
             st.session_state.mostrar_checklist = False
+
+            dados_salvos = carregar_dados_motorista(nome)
+            if dados_salvos:
+                st.session_state.historico_percursos = dados_salvos.get("historico_percursos", [])
+                st.session_state.saldo_pontos_ano = dados_salvos.get("saldo_pontos_ano", 0)
+
             iniciar_percurso_de_verdade()
             st.rerun()
     with col_cancelar:
@@ -321,6 +446,7 @@ def resumo_dialog():
                     st.warning("Você ainda não tem pontos suficientes.")
                 else:
                     st.session_state.saldo_pontos_ano -= pontos_usados_ipva
+                    salvar_estado_atual()
                     st.success(f"Resgatado! R$ {desconto_final:.2f} de desconto.")
                     st.rerun()
 
@@ -334,6 +460,7 @@ def resumo_dialog():
             if st.button("Resgatar no posto", key="dialog_btn_posto"):
                 if st.session_state.saldo_pontos_ano >= custo_posto:
                     st.session_state.saldo_pontos_ano -= custo_posto
+                    salvar_estado_atual()
                     st.success(f"Cupom gerado: {escolha_posto_dialog}")
                     st.rerun()
                 else:
@@ -358,13 +485,18 @@ def resumo_dialog():
 # Barra lateral
 # ----------------------------------------------------------------------
 st.sidebar.header("⚙️ Configurações")
-st.sidebar.warning("🧪 Modo demonstração: os dados são simulados, não vêm de um Arduino real.")
+if firebase_configurado():
+    st.sidebar.success("🟢 Firebase configurado — pronto para receber dados reais da ponte local.")
+else:
+    st.sidebar.error(
+        "🔴 FIREBASE_URL não configurado neste arquivo. Edite a constante no topo do código "
+        "com a mesma URL usada no ponte_local.py."
+    )
 
-limiar_aceleracao = st.sidebar.slider("Limiar de aceleração brusca (m/s²)", 0.5, 8.0, 2.5, 0.1)
-limiar_frenagem = st.sidebar.slider("Limiar de frenagem brusca (m/s²)", 0.5, 8.0, 2.5, 0.1)
-margem_histerese = st.sidebar.slider(
-    "Margem para 'zerar' o evento (m/s²)", 0.1, 3.0, 1.0, 0.1,
-    help="Depois de um evento, a leitura precisa voltar abaixo desta margem antes de contar um novo evento do mesmo tipo.",
+st.sidebar.caption(
+    "Os limiares de aceleração/frenagem brusca agora são configurados diretamente no "
+    "ponte_local.py (constantes LIMIAR_ACELERACAO, LIMIAR_FRENAGEM, MARGEM_HISTERESE), "
+    "já que é lá que a detecção de eventos acontece de verdade."
 )
 
 st.sidebar.divider()
@@ -382,20 +514,34 @@ limiar_minimo_pontuavel = st.sidebar.slider(
     help="Corridas com nota abaixo deste valor não geram pontos, mesmo que sejam longas.",
 )
 
-st.sidebar.divider()
-st.sidebar.subheader("🎮 Simulação")
-chance_evento_pct = st.sidebar.slider(
-    "Quão arriscado é o motorista simulado (%)", 0.5, 15.0, 2.0, 0.5,
-    help="Chance de começar um evento brusco a cada ciclo de leitura. Valores baixos = motorista cuidadoso (gera pontos). Valores altos = motorista arriscado (nota despenca).",
-)
-chance_evento = chance_evento_pct / 100
 
 
 # ----------------------------------------------------------------------
 # Cabeçalho
 # ----------------------------------------------------------------------
-st.title("🤖 MOVTEC - Comportamento do Robô")
+st.title("🤖 Telemetria Educacional - Comportamento do Robô")
 st.caption("Monitoramento de acelerações e frenagens bruscas — versão demo com dados simulados")
+
+if "viu_boas_vindas" not in st.session_state:
+    st.session_state.viu_boas_vindas = False
+
+with st.expander("ℹ️ Sobre este projeto", expanded=not st.session_state.viu_boas_vindas):
+    st.markdown(
+        """
+Este painel acompanha, em tempo real, o comportamento de condução de um **robô educacional**
+equipado com um sensor MPU6050 (acelerômetro/giroscópio), com o objetivo de conscientizar
+sobre direção segura.
+
+**Como funciona:**
+1. Preencha o checklist de segurança e inicie o percurso.
+2. Acompanhe os gráficos de aceleração, frenagem e força G em tempo real.
+3. Ao finalizar, veja seu resumo, sua nota (0 a 10) e os pontos ganhos.
+4. Troque os pontos por desconto no IPVA ou em postos parceiros (exemplos fictícios, só para demonstração).
+
+*(Os dados vêm de verdade do sensor MPU6050 do robô, transmitidos por Bluetooth até o notebook da ponte, e daí até aqui pelo Firebase.)*
+        """
+    )
+st.session_state.viu_boas_vindas = True
 
 st.divider()
 
@@ -416,39 +562,14 @@ with col_b:
         use_container_width=True,
         type="primary",
     ):
+        enviar_comando("finalizar")
         st.session_state.coletando = False
-        st.session_state.percurso_finalizado = True
-
-        hora_fim = datetime.now()
-        hora_inicio = st.session_state.hora_inicio_percurso or hora_fim
-        duracao_min = max((hora_fim - hora_inicio).total_seconds() / 60, 0.01)
-        total_eventos = st.session_state.total_aceleracoes + st.session_state.total_frenagens
-
-        nota, pontos = calcular_pontuacao(
-            duracao_min, total_eventos, peso_penalidade, pontos_por_minuto, limiar_minimo_pontuavel
-        )
-        st.session_state.nota_ultima_corrida = nota
-        st.session_state.pontos_ultima_corrida = pontos
-        st.session_state.saldo_pontos_ano += pontos
-        st.session_state.historico_percursos.append(
-            {
-                "Data": hora_fim.strftime("%d/%m/%Y %H:%M"),
-                "Duração (min)": round(duracao_min, 1),
-                "Eventos": total_eventos,
-                "Nota": nota,
-                "Pontos ganhos": pontos,
-            }
-        )
-
-        st.session_state.ultimo_resumo = gerar_resumo_texto()
-        st.session_state.resumo_pagina = 0
-        st.session_state.mostrar_resumo = True
 
 with col_c:
     if st.session_state.coletando:
-        st.info("🟢 Simulando percurso em tempo real...")
+        st.info("🟢 Recebendo dados em tempo real do robô...")
     else:
-        st.info("🟡 Pressione 'Iniciar Percurso' para começar a simulação.")
+        st.info("🟡 Pressione 'Iniciar Percurso' para começar.")
 
 # Reabre o pop-up certo em TODA execução do script, enquanto a flag
 # estiver ligada — é isso que faz a navegação por seta dentro do
@@ -477,20 +598,60 @@ st.divider()
 
 
 # ----------------------------------------------------------------------
-# Painel em tempo real (auto-atualiza a cada 0.5s)
+# Painel em tempo real (busca a telemetria da ponte local a cada 2s)
 # ----------------------------------------------------------------------
-@st.fragment(run_every=0.5)
+@st.fragment(run_every=2)
 def painel_tempo_real():
-    if st.session_state.coletando:
-        accel_x, forca_g = gerar_leitura_simulada(chance_evento)
-        registrar_evento(accel_x, limiar_aceleracao, limiar_frenagem, margem_histerese)
+    estado = buscar_estado()
 
-        nova_linha = pd.DataFrame(
-            [{"tempo": datetime.now(), "accel_x": accel_x, "forca_g": forca_g}]
-        )
-        st.session_state.historico = pd.concat(
-            [st.session_state.historico, nova_linha], ignore_index=True
-        )
+    if estado:
+        st.session_state.coletando = estado.get("coletando", False)
+        st.session_state.total_aceleracoes = estado.get("total_aceleracoes", 0)
+        st.session_state.total_frenagens = estado.get("total_frenagens", 0)
+
+        amostras = estado.get("amostras", [])
+        if amostras:
+            st.session_state.historico = pd.DataFrame(amostras)
+
+        # Detecta uma finalização NOVA (a ponte só manda "finalizado_em"
+        # quando o percurso termina) e calcula nota/pontos nesse momento —
+        # é aqui, e não no clique do botão, porque só agora temos os
+        # números finais de verdade, vindos da ponte.
+        marca_finalizacao = estado.get("finalizado_em")
+        if (
+            estado.get("finalizado")
+            and marca_finalizacao
+            and marca_finalizacao != st.session_state.ultimo_finalizado_processado
+        ):
+            duracao_min = estado.get("duracao_min", 0.01)
+            total_eventos = st.session_state.total_aceleracoes + st.session_state.total_frenagens
+
+            nota, pontos = calcular_pontuacao(
+                duracao_min, total_eventos, peso_penalidade, pontos_por_minuto, limiar_minimo_pontuavel
+            )
+            st.session_state.nota_ultima_corrida = nota
+            st.session_state.pontos_ultima_corrida = pontos
+            st.session_state.saldo_pontos_ano += pontos
+            st.session_state.historico_percursos.append(
+                {
+                    "Data": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                    "Duração (min)": round(duracao_min, 1),
+                    "Eventos": total_eventos,
+                    "Nota": nota,
+                    "Pontos ganhos": pontos,
+                }
+            )
+            st.session_state.ultimo_resumo = gerar_resumo_texto()
+            st.session_state.resumo_pagina = 0
+            st.session_state.mostrar_resumo = True
+            st.session_state.ultimo_finalizado_processado = marca_finalizacao
+            st.session_state.percurso_finalizado = True
+
+            salvar_estado_atual()
+
+            # Força uma execução completa do script AGORA (em vez de esperar
+            # a próxima interação) para o pop-up de resumo abrir na hora.
+            st.rerun()
 
     historico = st.session_state.historico
 
@@ -541,11 +702,17 @@ else:
         "O índice de qualidade é a média das notas ponderada pela duração de cada corrida — "
         "ele é quem define quanto do teto de desconto do IPVA você consegue usar (veja abaixo)."
     )
-    st.info(
-        "⚠️ Este extrato existe apenas durante esta sessão do navegador (dados simulados/demo). "
-        "Para valer durante o ano todo, de verdade, precisa de um cadastro de motorista "
-        "e um banco de dados permanente (ex: o mesmo Firebase já usado para os dados do robô)."
-    )
+    if firebase_configurado():
+        st.success(
+            f"✅ Histórico salvo com persistência real, associado ao motorista "
+            f"**{st.session_state.nome_motorista or 'sem nome'}**. Ele continua aqui mesmo se você fechar e voltar depois."
+        )
+    else:
+        st.info(
+            "⚠️ Este extrato existe apenas durante esta sessão do navegador. "
+            "Para valer entre visitas diferentes, de verdade, configure a constante FIREBASE_URL "
+            "no topo do arquivo (mesma URL usada no ponte_local.py)."
+        )
 
 st.divider()
 st.subheader("🎁 Resgatar Pontos")
@@ -572,6 +739,7 @@ with col_ipva:
             st.warning("Você ainda não tem pontos suficientes.")
         else:
             st.session_state.saldo_pontos_ano -= pontos_usados_ipva
+            salvar_estado_atual()
             st.success(f"Resgatado! R$ {desconto_final:.2f} de desconto usando {pontos_usados_ipva} pontos.")
             st.rerun()
 
@@ -584,6 +752,7 @@ with col_posto:
     if st.button("Resgatar no posto"):
         if st.session_state.saldo_pontos_ano >= custo_pontos:
             st.session_state.saldo_pontos_ano -= custo_pontos
+            salvar_estado_atual()
             st.success(f"Resgatado! Cupom gerado para: {escolha_posto}")
             st.rerun()
         else:
@@ -591,3 +760,50 @@ with col_posto:
                 f"Pontos insuficientes. Você tem {int(st.session_state.saldo_pontos_ano)}, "
                 f"precisa de {custo_pontos}."
             )
+
+
+# ----------------------------------------------------------------------
+# Comparativo entre motoristas
+# ----------------------------------------------------------------------
+st.divider()
+st.subheader("🏁 Comparativo entre Motoristas")
+
+if not firebase_configurado():
+    st.info(
+        "Este comparativo precisa da persistência com Firebase ativada (veja a constante "
+        "FIREBASE_URL no topo do arquivo). Sem ela, cada sessão só enxerga os próprios dados."
+    )
+else:
+    todos_motoristas = carregar_todos_motoristas()
+    if not todos_motoristas:
+        st.write("Ainda não há corridas salvas de nenhum motorista.")
+    else:
+        linhas_comparativo = []
+        for chave, dados in todos_motoristas.items():
+            if not isinstance(dados, dict):
+                continue
+            hist = dados.get("historico_percursos", []) or []
+            soma_pond = sum(item.get("Nota", 0) * item.get("Duração (min)", 0) for item in hist)
+            soma_dur = sum(item.get("Duração (min)", 0) for item in hist)
+            indice = round(soma_pond / soma_dur, 1) if soma_dur > 0 else None
+            linhas_comparativo.append(
+                {
+                    "Motorista": dados.get("nome", chave),
+                    "Corridas": len(hist),
+                    "Índice de Qualidade": indice,
+                    "Saldo de Pontos": dados.get("saldo_pontos_ano", 0),
+                }
+            )
+
+        if not linhas_comparativo:
+            st.write("Ainda não há corridas salvas de nenhum motorista.")
+        else:
+            df_comparativo = pd.DataFrame(linhas_comparativo).sort_values(
+                "Índice de Qualidade", ascending=False, na_position="last"
+            )
+            st.dataframe(df_comparativo, use_container_width=True, hide_index=True)
+
+            df_grafico = df_comparativo.dropna(subset=["Índice de Qualidade"]).set_index("Motorista")
+            if not df_grafico.empty:
+                st.caption("Índice de qualidade anual por motorista")
+                st.bar_chart(df_grafico["Índice de Qualidade"])
