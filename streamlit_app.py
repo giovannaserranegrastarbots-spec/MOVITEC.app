@@ -249,7 +249,7 @@ POSTOS_EXEMPLO = {
 # Aqui o Firebase não é mais opcional: ele carrega a telemetria real vinda
 # da ponte local, os comandos de Iniciar/Finalizar, E o histórico de cada
 # motorista. Cole a mesma URL usada no ponte_local.py.
-FIREBASE_URL = "https://telemetria-app-281d2-default-rtdb.firebaseio.com/"
+FIREBASE_URL = "https://SEU-PROJETO-default-rtdb.firebaseio.com"
 
 
 def firebase_configurado():
@@ -553,6 +553,7 @@ col_a, col_b, col_c = st.columns([1, 1, 2])
 
 with col_a:
     if st.button("▶️ Iniciar Percurso", disabled=st.session_state.coletando, use_container_width=True):
+        st.session_state.mostrar_resumo = False  # garante que um resumo antigo "preso" não bloqueie o checklist
         st.session_state.mostrar_checklist = True
 
 with col_b:
