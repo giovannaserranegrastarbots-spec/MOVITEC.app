@@ -39,14 +39,14 @@ import serial
 import serial.tools.list_ports
 
 # ---------- CONFIGURAÇÃO: edite estas linhas ----------
-FIREBASE_URL = "https://telemetria-app-281d2-default-rtdb.firebaseio.com/"
+FIREBASE_URL = "https://SEU-PROJETO-default-rtdb.firebaseio.com"  # <- troque pela sua URL
 
 # Com HC-05 (Bluetooth), a detecção automática pode escolher a porta errada
 # se você tiver outros dispositivos Bluetooth pareados. Recomendado: pareie o
 # HC-05 primeiro, veja qual porta o sistema criou para ele, e defina aqui
 # manualmente. Exemplos: "COM7" (Windows) ou "/dev/tty.HC-05-DevB" (Mac/Linux).
-PORTA_SERIAL = COM4
-BAUD_RATE = 115200  # baud rate para USB
+PORTA_SERIAL = None  # None = detectar automaticamente (só recomendado se for o único dispositivo pareado)
+BAUD_RATE = 9600  # baud rate padrão de fábrica do HC-05
 
 LIMIAR_ACELERACAO = 2.5
 LIMIAR_FRENAGEM = 2.5
@@ -114,6 +114,20 @@ def main():
     conexao.reset_input_buffer()
     print("Conectado! Aguardando comando 'Iniciar Percurso' vindo do site...\n")
 
+    # Limpa qualquer estado "preso" de uma sessão anterior que não tenha
+    # sido encerrada corretamente (ex: a ponte foi fechada no meio de uma
+    # coleta). Sem isso, o site pode achar que já existe uma corrida em
+    # andamento e desabilitar o botão "Iniciar Percurso".
+    enviar_estado(
+        {
+            "coletando": False,
+            "finalizado": False,
+            "total_aceleracoes": 0,
+            "total_frenagens": 0,
+            "amostras": [],
+        }
+    )
+
     threading.Thread(target=aguardar_tecla_para_encerrar, daemon=True).start()
 
     coletando = False
@@ -146,7 +160,7 @@ def main():
                     total_frenagens = 0
                     estado_evento = "neutro"
                     ultimo_comando_id_processado = comando.get("id")
-                    print(">>> Comando recebido do site: INICIAR percurso <<<")
+                    print("\n🟢 PERCURSO INICIADO — coletando dados do sensor...\n")
                     enviar_estado(
                         {
                             "coletando": True,
@@ -161,11 +175,9 @@ def main():
                     coletando = False
                     duracao_min = max((datetime.now() - hora_inicio).total_seconds() / 60, 0.01)
                     ultimo_comando_id_processado = comando.get("id")
-                    print(
-                        f">>> Comando recebido do site: FINALIZAR percurso "
-                        f"({total_aceleracoes} aceleração(ões), {total_frenagens} frenagem(ns), "
-                        f"{duracao_min:.1f} min) <<<"
-                    )
+                    total_eventos = total_aceleracoes + total_frenagens
+                    amostras_coletadas = len(janela)
+
                     enviar_estado(
                         {
                             "coletando": False,
@@ -177,6 +189,18 @@ def main():
                             "amostras": list(janela),
                         }
                     )
+
+                    print("\n" + "=" * 50)
+                    print("✅ PERCURSO FINALIZADO COM SUCESSO")
+                    print("=" * 50)
+                    print(f"  Data/hora:              {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+                    print(f"  Duração do percurso:    {duracao_min:.2f} min")
+                    print(f"  Acelerações bruscas:    {total_aceleracoes}")
+                    print(f"  Frenagens bruscas:      {total_frenagens}")
+                    print(f"  Total de eventos:       {total_eventos}")
+                    print(f"  Amostras coletadas:     {amostras_coletadas}")
+                    print(f"  Dados enviados para:    {FIREBASE_URL}/estado")
+                    print("=" * 50 + "\n")
 
         # 2. Lê a serial, só se estiver coletando de verdade
         if coletando:
