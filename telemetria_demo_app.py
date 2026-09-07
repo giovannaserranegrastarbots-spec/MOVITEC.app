@@ -1,25 +1,22 @@
 """
-Telemetria Educacional - Versão NUVEM (dados reais via Bluetooth + Firebase)
--------------------------------------------------------------------------------
-Este app roda no Streamlit Community Cloud. Ele NÃO se conecta à porta
-serial do robô diretamente (por isso não usa pyserial) — quem faz isso é
-o "ponte_local.py", rodando no notebook próximo ao robô, pareado com o
-HC-05 por Bluetooth.
+Telemetria Educacional - Versão DEMO (dados simulados)
+---------------------------------------------------------
+Essa versão NÃO precisa de Arduino, sensor, porta serial nem Firebase.
+Ela gera dados falsos de aceleração/frenagem, sozinha, só para você
+construir e testar a interface, os gráficos, as métricas e o feedback
+por voz.
 
-Fluxo dos dados:
-    Este app  --(comando "iniciar"/"finalizar")-->  Firebase  --> ponte_local.py
-    ponte_local.py  --(telemetria real)-->  Firebase  -->  Este app
+Quando o robô estiver disponível de novo, essa mesma lógica de
+interface pode ser reaproveitada trocando só a função que gera os
+dados (gerar_leitura_simulada) pela leitura real da serial.
 
-Ou seja: os botões "Iniciar Percurso" e "Finalizar Percurso" aqui não
-começam a coleta sozinhos — eles escrevem um comando no Firebase, e é a
-ponte local (que está de fato conectada ao robô) quem obedece.
-
-Como executar (nuvem):
-    Faça o deploy deste arquivo no Streamlit Community Cloud, usando o
-    requirements.txt (streamlit, pandas, requests — sem pyserial).
+Como executar:
+    pip install streamlit pandas
+    streamlit run telemetria_demo_app.py
 """
 
 import json
+import random
 import re
 import time
 from datetime import datetime
@@ -29,7 +26,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Telemetria Educacional - Robô", layout="wide")
+st.set_page_config(page_title="Telemetria Educacional - Robô (Demo)", layout="wide")
 
 
 # ----------------------------------------------------------------------
@@ -41,8 +38,12 @@ def inicializar_estado():
         "historico": pd.DataFrame(columns=["tempo", "accel_x", "forca_g"]),
         "total_aceleracoes": 0,
         "total_frenagens": 0,
+        "estado_evento_anterior": "neutro",
+        "sim_tipo_ativo": None,   # None | "acel" | "freio"
+        "sim_ciclos_restantes": 0,
         "percurso_finalizado": False,
         "ultimo_resumo": "",
+        "hora_inicio_percurso": None,
         "nota_ultima_corrida": None,
         "pontos_ultima_corrida": 0,
         "saldo_pontos_ano": 0,
@@ -51,10 +52,7 @@ def inicializar_estado():
         "mostrar_checklist": False,
         "mostrar_resumo": False,
         "nome_motorista": "",
-        "ultimo_finalizado_processado": None,  # marca da última finalização já tratada
-        "amostras_ultima_corrida": 0,
-        "duracao_ultima_corrida": 0.0,
-        "horario_ultima_corrida": "",
+        "historico_por_motorista": {},  # {nome: [corrida1, corrida2, ...]}
     }
     for chave, valor in defaults.items():
         if chave not in st.session_state:
@@ -65,44 +63,50 @@ inicializar_estado()
 
 
 # ----------------------------------------------------------------------
-# Comunicação com a ponte local (via Firebase)
+# Simulação de dados (substitui o Arduino por enquanto)
 # ----------------------------------------------------------------------
-def buscar_estado():
-    """Busca o retrato mais recente da telemetria, enviado pela ponte local."""
-    if not firebase_configurado():
-        return {}
-    try:
-        resposta = requests.get(f"{FIREBASE_URL}/estado.json", timeout=5)
-        resposta.raise_for_status()
-        return resposta.json() or {}
-    except requests.exceptions.RequestException:
-        st.warning("⚠️ Não consegui falar com o Firebase agora. Verifique sua conexão.")
-        return {}
-    except Exception:
-        return {}
+def gerar_leitura_simulada(chance_evento):
+    """Gera um valor de aceleração longitudinal parecido com um robô real:
+    a maior parte do tempo é ruído pequeno, com "rajadas" ocasionais de
+    aceleração ou frenagem brusca, como se fosse um trajeto de verdade.
+
+    chance_evento: probabilidade (0 a 1) de iniciar uma nova rajada a cada
+    ciclo de leitura. Quanto maior, mais "arriscado" o motorista simulado."""
+
+    # chance de começar uma nova rajada de evento, se não houver uma ativa
+    if st.session_state.sim_tipo_ativo is None and random.random() < chance_evento:
+        st.session_state.sim_tipo_ativo = random.choice(["acel", "freio"])
+        st.session_state.sim_ciclos_restantes = random.randint(2, 5)
+
+    if st.session_state.sim_tipo_ativo is None:
+        accel_x = random.uniform(-0.5, 0.5)
+    else:
+        pico = random.uniform(3.0, 6.0)
+        accel_x = pico if st.session_state.sim_tipo_ativo == "acel" else -pico
+        st.session_state.sim_ciclos_restantes -= 1
+        if st.session_state.sim_ciclos_restantes <= 0:
+            st.session_state.sim_tipo_ativo = None
+
+    forca_g = 1.0 + abs(accel_x) / 9.80665 + random.uniform(-0.03, 0.03)
+    return round(accel_x, 2), round(forca_g, 2)
 
 
-def enviar_comando(acao):
-    """Escreve um comando (iniciar/finalizar) para a ponte local obedecer.
-    Cada comando tem um 'id' único (baseado no horário) para a ponte saber
-    que é um comando NOVO, e não o mesmo de antes."""
-    if not firebase_configurado():
-        st.error(
-            "FIREBASE_URL não configurado neste app — sem isso, não há como avisar a ponte local. "
-            "Edite a constante no topo do arquivo."
-        )
-        return
-    payload = {"acao": acao, "id": f"{acao}_{int(time.time() * 1000)}"}
-    try:
-        resposta = requests.put(f"{FIREBASE_URL}/comando.json", data=json.dumps(payload), timeout=5)
-        resposta.raise_for_status()
-    except requests.exceptions.RequestException:
-        st.warning(
-            "⚠️ Não consegui enviar o comando para o robô agora (sem conexão com o Firebase). "
-            "Confira se o notebook da ponte (ponte_local.py) está ligado e conectado à internet."
-        )
-    except Exception:
-        st.warning("⚠️ Algo deu errado ao enviar o comando.")
+# ----------------------------------------------------------------------
+# Detecção de eventos (mesma lógica que será usada com dados reais)
+# ----------------------------------------------------------------------
+def registrar_evento(accel_x, limiar_aceleracao, limiar_frenagem, margem_histerese):
+    estado_anterior = st.session_state.estado_evento_anterior
+
+    if accel_x >= limiar_aceleracao:
+        if estado_anterior != "acelerando":
+            st.session_state.total_aceleracoes += 1
+        st.session_state.estado_evento_anterior = "acelerando"
+    elif accel_x <= -limiar_frenagem:
+        if estado_anterior != "freando":
+            st.session_state.total_frenagens += 1
+        st.session_state.estado_evento_anterior = "freando"
+    elif abs(accel_x) <= margem_histerese:
+        st.session_state.estado_evento_anterior = "neutro"
 
 
 def gerar_resumo_texto():
@@ -199,11 +203,10 @@ def calcular_indice_qualidade_anual():
 def calcular_teto_seguro_modulado():
     """
     O teto de desconto (DESCONTO_MAXIMO_SEGURO_PCT) é definido pela política
-    comercial da seguradora parceira, mas quanto DESSE teto o motorista
-    consegue de fato usar é modulado pelo índice de qualidade anual: índice
-    10/10 libera 100% do teto, índice 5/10 libera só 50%, etc. Isso amarra o
-    benefício do seguro à consistência da boa condução ao longo do ano, não
-    só ao volume de pontos acumulados.
+    comercial da seguradora parceira, mas quanto DESSE teto o motorista consegue de fato usar é modulado pelo
+    índice de qualidade anual: índice 10/10 libera 100% do teto, índice 5/10
+    libera só 50%, etc. Isso amarra o benefício do seguro à consistência da
+    boa condução ao longo do ano, não só ao volume de pontos acumulados.
 
     Retorna (teto_efetivo_pct, indice_anual). indice_anual vem None se ainda
     não houver nenhuma corrida no histórico.
@@ -249,10 +252,12 @@ POSTOS_EXEMPLO = {
     "Rede Estrada Verde — R$ 20 de desconto": 350,
 }
 
-# ---------- Configuração do Firebase (obrigatório nesta versão) ----------
-# Aqui o Firebase não é mais opcional: ele carrega a telemetria real vinda
-# da ponte local, os comandos de Iniciar/Finalizar, E o histórico de cada
-# motorista. Cole a mesma URL usada no ponte_local.py.
+# ---------- Persistência entre sessões (opcional) ----------
+# Cole aqui a mesma URL do Firebase Realtime Database usada no ponte_local.py
+# / telemetria_cloud_app.py para que o histórico de cada motorista fique
+# salvo de verdade entre visitas diferentes. Se deixar como está, o app
+# continua funcionando normalmente, só que o histórico não sobrevive a um
+# fechar de aba (comportamento atual).
 FIREBASE_URL = "https://SEU-PROJETO-default-rtdb.firebaseio.com"
 
 
@@ -341,15 +346,15 @@ def salvar_estado_atual():
 
 
 def iniciar_percurso_de_verdade():
-    """Avisa a ponte local (via comando no Firebase) que a corrida deve
-    começar. Também reflete otimistamente na tela local — o próximo
-    ciclo do painel em tempo real confirma com o estado real da ponte."""
-    enviar_comando("iniciar")
+    """Zera os contadores e efetivamente começa a coleta de dados."""
     st.session_state.coletando = True
     st.session_state.percurso_finalizado = False
     st.session_state.historico = pd.DataFrame(columns=["tempo", "accel_x", "forca_g"])
     st.session_state.total_aceleracoes = 0
     st.session_state.total_frenagens = 0
+    st.session_state.estado_evento_anterior = "neutro"
+    st.session_state.sim_tipo_ativo = None
+    st.session_state.hora_inicio_percurso = datetime.now()
 
 
 @st.dialog("✅ Checklist Pré-Corrida")
@@ -400,13 +405,6 @@ def checklist_dialog():
 @st.dialog("📋 Resumo da Corrida")
 def resumo_dialog():
     if st.session_state.resumo_pagina == 0:
-        st.success("✅ Percurso concluído com sucesso! Dados recebidos e processados.")
-        st.caption(
-            f"🕒 {st.session_state.horario_ultima_corrida}  •  "
-            f"⏱️ {st.session_state.duracao_ultima_corrida:.2f} min  •  "
-            f"📡 {st.session_state.amostras_ultima_corrida} amostras coletadas"
-        )
-
         st.write(st.session_state.ultimo_resumo)
 
         if st.button("🔊 Ouvir Feedback"):
@@ -496,18 +494,13 @@ def resumo_dialog():
 # Barra lateral
 # ----------------------------------------------------------------------
 st.sidebar.header("⚙️ Configurações")
-if firebase_configurado():
-    st.sidebar.success("🟢 Firebase configurado — pronto para receber dados reais da ponte local.")
-else:
-    st.sidebar.error(
-        "🔴 FIREBASE_URL não configurado neste arquivo. Edite a constante no topo do código "
-        "com a mesma URL usada no ponte_local.py."
-    )
+st.sidebar.warning("🧪 Modo demonstração: os dados são simulados, não vêm de um Arduino real.")
 
-st.sidebar.caption(
-    "Os limiares de aceleração/frenagem brusca agora são configurados diretamente no "
-    "ponte_local.py (constantes LIMIAR_ACELERACAO, LIMIAR_FRENAGEM, MARGEM_HISTERESE), "
-    "já que é lá que a detecção de eventos acontece de verdade."
+limiar_aceleracao = st.sidebar.slider("Limiar de aceleração brusca (m/s²)", 0.5, 8.0, 2.5, 0.1)
+limiar_frenagem = st.sidebar.slider("Limiar de frenagem brusca (m/s²)", 0.5, 8.0, 2.5, 0.1)
+margem_histerese = st.sidebar.slider(
+    "Margem para 'zerar' o evento (m/s²)", 0.1, 3.0, 1.0, 0.1,
+    help="Depois de um evento, a leitura precisa voltar abaixo desta margem antes de contar um novo evento do mesmo tipo.",
 )
 
 st.sidebar.divider()
@@ -525,6 +518,13 @@ limiar_minimo_pontuavel = st.sidebar.slider(
     help="Corridas com nota abaixo deste valor não geram pontos, mesmo que sejam longas.",
 )
 
+st.sidebar.divider()
+st.sidebar.subheader("🎮 Simulação")
+chance_evento_pct = st.sidebar.slider(
+    "Quão arriscado é o motorista simulado (%)", 0.5, 15.0, 2.0, 0.5,
+    help="Chance de começar um evento brusco a cada ciclo de leitura. Valores baixos = motorista cuidadoso (gera pontos). Valores altos = motorista arriscado (nota despenca).",
+)
+chance_evento = chance_evento_pct / 100
 
 
 # ----------------------------------------------------------------------
@@ -549,7 +549,7 @@ sobre direção segura.
 3. Ao finalizar, veja seu resumo, sua nota (0 a 10) e os pontos ganhos.
 4. Troque os pontos por desconto no seguro ou em postos parceiros (exemplos fictícios, só para demonstração).
 
-*(Os dados vêm de verdade do sensor MPU6050 do robô, transmitidos por Bluetooth até o notebook da ponte, e daí até aqui pelo Firebase.)*
+*(Esta é a versão de demonstração: os dados do sensor são simulados. Quando ligado ao robô de verdade, os mesmos gráficos e regras passam a refletir a condução real.)*
         """
     )
 st.session_state.viu_boas_vindas = True
@@ -564,7 +564,6 @@ col_a, col_b, col_c = st.columns([1, 1, 2])
 
 with col_a:
     if st.button("▶️ Iniciar Percurso", disabled=st.session_state.coletando, use_container_width=True):
-        st.session_state.mostrar_resumo = False  # garante que um resumo antigo "preso" não bloqueie o checklist
         st.session_state.mostrar_checklist = True
 
 with col_b:
@@ -574,14 +573,41 @@ with col_b:
         use_container_width=True,
         type="primary",
     ):
-        enviar_comando("finalizar")
         st.session_state.coletando = False
+        st.session_state.percurso_finalizado = True
+
+        hora_fim = datetime.now()
+        hora_inicio = st.session_state.hora_inicio_percurso or hora_fim
+        duracao_min = max((hora_fim - hora_inicio).total_seconds() / 60, 0.01)
+        total_eventos = st.session_state.total_aceleracoes + st.session_state.total_frenagens
+
+        nota, pontos = calcular_pontuacao(
+            duracao_min, total_eventos, peso_penalidade, pontos_por_minuto, limiar_minimo_pontuavel
+        )
+        st.session_state.nota_ultima_corrida = nota
+        st.session_state.pontos_ultima_corrida = pontos
+        st.session_state.saldo_pontos_ano += pontos
+        st.session_state.historico_percursos.append(
+            {
+                "Data": hora_fim.strftime("%d/%m/%Y %H:%M"),
+                "Duração (min)": round(duracao_min, 1),
+                "Eventos": total_eventos,
+                "Nota": nota,
+                "Pontos ganhos": pontos,
+            }
+        )
+
+        st.session_state.ultimo_resumo = gerar_resumo_texto()
+        st.session_state.resumo_pagina = 0
+        st.session_state.mostrar_resumo = True
+
+        salvar_estado_atual()
 
 with col_c:
     if st.session_state.coletando:
-        st.info("🟢 Recebendo dados em tempo real do robô...")
+        st.info("🟢 Simulando percurso em tempo real...")
     else:
-        st.info("🟡 Pressione 'Iniciar Percurso' para começar.")
+        st.info("🟡 Pressione 'Iniciar Percurso' para começar a simulação.")
 
 # Reabre o pop-up certo em TODA execução do script, enquanto a flag
 # estiver ligada — é isso que faz a navegação por seta dentro do
@@ -610,64 +636,20 @@ st.divider()
 
 
 # ----------------------------------------------------------------------
-# Painel em tempo real (busca a telemetria da ponte local a cada 2s)
+# Painel em tempo real (auto-atualiza a cada 0.5s)
 # ----------------------------------------------------------------------
-@st.fragment(run_every=2)
+@st.fragment(run_every=0.5)
 def painel_tempo_real():
-    estado = buscar_estado()
+    if st.session_state.coletando:
+        accel_x, forca_g = gerar_leitura_simulada(chance_evento)
+        registrar_evento(accel_x, limiar_aceleracao, limiar_frenagem, margem_histerese)
 
-    if estado:
-        st.session_state.coletando = estado.get("coletando", False)
-        st.session_state.total_aceleracoes = estado.get("total_aceleracoes", 0)
-        st.session_state.total_frenagens = estado.get("total_frenagens", 0)
-
-        amostras = estado.get("amostras", [])
-        if amostras:
-            st.session_state.historico = pd.DataFrame(amostras)
-
-        # Detecta uma finalização NOVA (a ponte só manda "finalizado_em"
-        # quando o percurso termina) e calcula nota/pontos nesse momento —
-        # é aqui, e não no clique do botão, porque só agora temos os
-        # números finais de verdade, vindos da ponte.
-        marca_finalizacao = estado.get("finalizado_em")
-        if (
-            estado.get("finalizado")
-            and marca_finalizacao
-            and marca_finalizacao != st.session_state.ultimo_finalizado_processado
-        ):
-            duracao_min = estado.get("duracao_min", 0.01)
-            total_eventos = st.session_state.total_aceleracoes + st.session_state.total_frenagens
-            amostras_coletadas = len(amostras)
-
-            nota, pontos = calcular_pontuacao(
-                duracao_min, total_eventos, peso_penalidade, pontos_por_minuto, limiar_minimo_pontuavel
-            )
-            st.session_state.nota_ultima_corrida = nota
-            st.session_state.pontos_ultima_corrida = pontos
-            st.session_state.saldo_pontos_ano += pontos
-            st.session_state.amostras_ultima_corrida = amostras_coletadas
-            st.session_state.duracao_ultima_corrida = round(duracao_min, 2)
-            st.session_state.horario_ultima_corrida = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-            st.session_state.historico_percursos.append(
-                {
-                    "Data": datetime.now().strftime("%d/%m/%Y %H:%M"),
-                    "Duração (min)": round(duracao_min, 1),
-                    "Eventos": total_eventos,
-                    "Nota": nota,
-                    "Pontos ganhos": pontos,
-                }
-            )
-            st.session_state.ultimo_resumo = gerar_resumo_texto()
-            st.session_state.resumo_pagina = 0
-            st.session_state.mostrar_resumo = True
-            st.session_state.ultimo_finalizado_processado = marca_finalizacao
-            st.session_state.percurso_finalizado = True
-
-            salvar_estado_atual()
-
-            # Força uma execução completa do script AGORA (em vez de esperar
-            # a próxima interação) para o pop-up de resumo abrir na hora.
-            st.rerun()
+        nova_linha = pd.DataFrame(
+            [{"tempo": datetime.now(), "accel_x": accel_x, "forca_g": forca_g}]
+        )
+        st.session_state.historico = pd.concat(
+            [st.session_state.historico, nova_linha], ignore_index=True
+        )
 
     historico = st.session_state.historico
 
@@ -725,9 +707,9 @@ else:
         )
     else:
         st.info(
-            "⚠️ Este extrato existe apenas durante esta sessão do navegador. "
-            "Para valer entre visitas diferentes, de verdade, configure a constante FIREBASE_URL "
-            "no topo do arquivo (mesma URL usada no ponte_local.py)."
+            "⚠️ Este extrato existe apenas durante esta sessão do navegador (dados simulados/demo). "
+            "Para valer durante o ano todo, de verdade, configure a constante FIREBASE_URL no topo "
+            "do arquivo (mesmo Firebase já usado para os dados do robô)."
         )
 
 st.divider()
