@@ -258,7 +258,7 @@ POSTOS_EXEMPLO = {
 # salvo de verdade entre visitas diferentes. Se deixar como está, o app
 # continua funcionando normalmente, só que o histórico não sobrevive a um
 # fechar de aba (comportamento atual).
-FIREBASE_URL = "https://SEU-PROJETO-default-rtdb.firebaseio.com"
+FIREBASE_URL = "https://telemetria-app-281d2-default-rtdb.firebaseio.com/"
 
 
 def firebase_configurado():
