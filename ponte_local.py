@@ -39,7 +39,7 @@ import serial
 import serial.tools.list_ports
 
 # ---------- CONFIGURAÇÃO: edite estas linhas ----------
-FIREBASE_URL = "https://SEU-PROJETO-default-rtdb.firebaseio.com"  # <- troque pela sua URL
+FIREBASE_URL = "https://telemetria-app-281d2-default-rtdb.firebaseio.com/"
 
 # Com HC-05 (Bluetooth), a detecção automática pode escolher a porta errada
 # se você tiver outros dispositivos Bluetooth pareados. Recomendado: pareie o
