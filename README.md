@@ -1,4 +1,4 @@
-# 🎈 Blank app template
+# APP MOVTEC
 
 A simple Streamlit app template for you to modify!
 
