@@ -1,23 +1,3 @@
-"""
-Telemetria Educacional - Versão NUVEM (dados reais via Bluetooth + Firebase)
--------------------------------------------------------------------------------
-Este app roda no Streamlit Community Cloud. Ele NÃO se conecta à porta
-serial do robô diretamente (por isso não usa pyserial) — quem faz isso é
-o "ponte_local.py", rodando no notebook próximo ao robô, pareado com o
-HC-05 por Bluetooth.
-
-Fluxo dos dados:
-    Este app  --(comando "iniciar"/"finalizar")-->  Firebase  --> ponte_local.py
-    ponte_local.py  --(telemetria real)-->  Firebase  -->  Este app
-
-Ou seja: os botões "Iniciar Percurso" e "Finalizar Percurso" aqui não
-começam a coleta sozinhos — eles escrevem um comando no Firebase, e é a
-ponte local (que está de fato conectada ao robô) quem obedece.
-
-Como executar (nuvem):
-    Faça o deploy deste arquivo no Streamlit Community Cloud, usando o
-    requirements.txt (streamlit, pandas, requests — sem pyserial).
-"""
 
 import json
 import re
@@ -29,7 +9,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Telemetria Educacional - Robô", layout="wide")
+st.set_page_config(page_title="MOVTEC", layout="wide")
 
 
 # ----------------------------------------------------------------------
@@ -530,7 +510,7 @@ limiar_minimo_pontuavel = st.sidebar.slider(
 # ----------------------------------------------------------------------
 # Cabeçalho
 # ----------------------------------------------------------------------
-st.title("🤖 Telemetria Educacional - Comportamento do Robô")
+st.title("MOVTEC - SISTEMA DE TELEMETRIA")
 st.caption("Monitoramento de acelerações e frenagens bruscas — versão demo com dados simulados")
 
 if "viu_boas_vindas" not in st.session_state:
