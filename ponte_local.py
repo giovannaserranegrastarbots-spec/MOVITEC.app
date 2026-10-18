@@ -48,9 +48,9 @@ FIREBASE_URL = "https://telemetria-app-281d2-default-rtdb.firebaseio.com/"  # <-
 PORTA_SERIAL = "COM6"  
 BAUD_RATE = 9600  # baud rate padrão de fábrica do HC-05
 
-LIMIAR_ACELERACAO = 0.5
-LIMIAR_FRENAGEM = 0.5
-MARGEM_HISTERESE = 0.02
+LIMIAR_ACELERACAO = 3.5
+LIMIAR_FRENAGEM = 3.5
+MARGEM_HISTERESE = 0.2
 
 INTERVALO_ENVIO_TELEMETRIA_S = 1.0  # a cada quantos segundos envia a telemetria pro Firebase
 INTERVALO_CHECAGEM_COMANDO_S = 1.0  # a cada quantos segundos confere se o site mandou algum comando novo
