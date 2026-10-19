@@ -14,7 +14,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Telemetria Educacional - Robô", layout="wide")
+st.set_page_config(page_title="MOVTEC - Tecnologia que muda vidas", layout="wide")
 
 
 # ----------------------------------------------------------------------
@@ -245,7 +245,7 @@ def resumo_dialog():
 # ----------------------------------------------------------------------
 # Layout e Controles
 # ----------------------------------------------------------------------
-st.title("🤖 Telemetria Educacional - Gamificação & Física")
+st.title("MOVTEC - Tecnologia que muda vidas")
 st.caption("Monitoramento de acelerações e frenagens bruscas com MPU6050")
 
 col_a, col_b, col_c = st.columns([1, 1, 2])
